@@ -1,5 +1,6 @@
 import streamlit as st
 import numpy as np
+import random
 
 st.set_page_config(
     page_title="AMIS — Messaging Intelligence",
@@ -62,40 +63,87 @@ with st.expander("📊 Optional: Campaign Context (Future Layer)"):
     engagement = st.number_input("Engagement", min_value=0, value=0)
 
     st.caption("Not used in scoring yet — future analytics layer")
+# -----------------------------
+# SIGNAL EXTRACTION (NEW CORE LAYER)
+# -----------------------------
+def extract_signals(text):
+    t = text.lower()
+    words = t.split()
+
+    # LENGTH
+    length = len(words)
+
+    # INTENSITY (simple proxy)
+    intensity = 0
+    if "!" in text:
+        intensity += 1
+    if any(w.isupper() for w in text.split()):
+        intensity += 1
+    if length < 10:
+        intensity += 1  # short = punchy/emotional
+
+    # STRUCTURE SIGNALS
+    has_numbers = any(c.isdigit() for c in text)
+    has_reasoning = any(w in t for w in ["because", "therefore", "leads", "causes"])
+    has_moral = any(w in t for w in ["should", "must"])
+
+    # QUESTION
+    is_question = "?" in text
+
+    return {
+        "length": length,
+        "intensity": intensity,
+        "has_numbers": has_numbers,
+        "has_reasoning": has_reasoning,
+        "has_moral": has_moral,
+        "is_question": is_question
+    }
 
 # -----------------------------
 # ARGUMENT TYPE
 # -----------------------------
 def argument_type(text):
-    t = text.lower()
 
-    if "?" in text:
+    s = extract_signals(text)
+
+    if s["is_question"]:
         return "Rhetorical"
 
-    if any(w in t for w in ["%", "study", "research", "data"]):
+    if s["has_numbers"]:
         return "Evidence-led"
 
-    if any(w in t for w in ["right", "justice", "freedom", "compassion"]):
+    if s["has_moral"]:
         return "Moral"
 
-    return "General"
+    if s["intensity"] >= 2 and s["length"] < 12:
+        return "High-intensity claim"
+
+    if s["length"] > 15:
+        return "Narrative / descriptive"
+
+    return "Basic claim"
 
 # -----------------------------
 # FUNCTION (UPGRADED)
 # -----------------------------
 def message_function(text):
-    t = text.lower()
 
-    if "?" in text:
-        return "Challenge to existing beliefs or norms"
+    s = extract_signals(text)
 
-    if any(w in t for w in ["right", "justice", "freedom", "compassion"]):
-        return "Mobilisation of moral concern and public reaction"
+    # Emotional alarm (urgent, punchy, no reasoning)
+    if s["intensity"] >= 2 and not s["has_reasoning"]:
+        return "Emotional alarm / attention trigger"
 
-    if any(w in t for w in ["data", "%", "study"]):
-        return "Persuasion through evidence and reasoning"
+    if s["is_question"]:
+        return "Challenge to existing beliefs"
 
-    return "Informational awareness building"
+    if s["has_moral"]:
+        return "Mobilisation of moral concern"
+
+    if s["has_numbers"] or s["has_reasoning"]:
+        return "Persuasion through reasoning"
+
+    return "Basic awareness statement"
 
 # -----------------------------
 # COMPONENT SCORING + EXPLANATION
@@ -135,7 +183,7 @@ def logic_score(text):
 def moral_score(text):
     t = text.lower()
 
-    moral_terms = sum(w in t for w in ["right", "justice", "compassion", "should", "must"])
+    moral_terms = sum(w in t for w in ["right", "justice", "compassion", "should", "must", "cruel", "suffer", "harm", "pain"])
 
     score = min(100, moral_terms * 20)
 
@@ -143,6 +191,35 @@ def moral_score(text):
 - Moral terms detected: {moral_terms}  
 - Examples: right, justice, compassion, should, must  
 - Scoring logic: (terms × 20)
+"""
+
+    return score, explanation
+
+# -----------------------------
+# ACTION SCORE (NEW)
+# -----------------------------
+# -----------------------------
+# ACTION SCORE (REFINED)
+# -----------------------------
+def action_score(text):
+    t = text.lower()
+
+    # Strong, specific actions
+    strong_actions = ["sign", "join", "support", "boycott", "demand", "donate", "vote"]
+
+    # Weak / vague actions
+    weak_actions = ["stop", "act", "change", "help"]
+
+    strong_count = sum(w in t for w in strong_actions)
+    weak_count = sum(w in t for w in weak_actions)
+
+    score = strong_count * 30 + weak_count * 10
+    score = min(100, score)
+
+    explanation = f"""
+- Strong action cues: {strong_count} (e.g. sign, support, boycott)  
+- Weak action cues: {weak_count} (e.g. stop, act, change)  
+- Scoring logic: (strong × 30) + (weak × 10)
 """
 
     return score, explanation
@@ -160,23 +237,38 @@ def cognitive_load(text):
         level = "HIGH"
 
     return level, avg
+# -----------------------------
+# STRUCTURE GAP DETECTION (NEW)
+# -----------------------------
+def missing_structure(e, l, m):
+    missing = []
 
+    if e < 20:
+        missing.append("evidence")
+
+    if l < 20:
+        missing.append("reasoning")
+
+    if m < 20:
+        missing.append("moral")
+
+    return missing
 # -----------------------------
 # FINAL SCORE
 # -----------------------------
-def final_score(func, e, l, m):
+def final_score(func, e, l, m, a):
 
     if "Mobilisation" in func:
-        score = 0.6*m + 0.2*l + 0.2*e
+        score = 0.4*m + 0.2*l + 0.2*e + 0.2*a
 
     elif "Persuasion" in func:
-        score = 0.4*e + 0.4*l + 0.2*m
+        score = 0.35*e + 0.35*l + 0.15*m + 0.15*a
 
     elif "Challenge" in func:
-        score = 0.5*l + 0.3*m + 0.2*e
+        score = 0.4*l + 0.3*m + 0.2*e + 0.1*a
 
     else:
-        score = (e + l + m) / 3
+        score = (e + l + m + a) / 4
 
     return int(score)
 
@@ -188,7 +280,7 @@ def interpret(score):
     if score < 30:
         return "Weak — lacks structure, clarity, or persuasive depth."
 
-    elif score < 60:
+    elif score < 50:
         return "Moderate — some persuasive elements present but incomplete."
 
     elif score < 80:
@@ -213,33 +305,109 @@ def explain_score(func, e, l, m):
     return "This is an informational message with balanced but limited persuasive elements."
 
 # -----------------------------
+# GAP DETECTION (NEW)
+# -----------------------------
+def detect_gaps(e, l, m):
+    gaps = []
+
+    if e < 20:
+        gaps.append("evidence")
+
+    if l < 20:
+        gaps.append("logic")
+
+    if m < 20:
+        gaps.append("moral")
+
+    return gaps
+
+# -----------------------------
 # STRATEGY MOVES
 # -----------------------------
-def strategy(func, e, l, m):
+def strategy(func, e, l, m, text):
+
+    import random
 
     moves = []
 
-    if "Mobilisation" in func:
-        if l < 30:
-            moves.append("👉 Add reasoning: explain why the issue matters")
-        if e < 20:
-            moves.append("👉 Add legitimacy: reference law, authority, or facts")
+    # -----------------------------
+    # 1. MORAL-HEAVY BUT STRUCTURALLY WEAK
+    # -----------------------------
+    if m > 40 and e < 20 and l < 20:
 
-    if "Persuasion" in func:
+        fact_prompts = [
+            "👉 Add ONE concrete fact to support this claim",
+            "👉 Anchor this with a statistic or real-world number",
+            "👉 Add a verifiable data point to increase credibility"
+        ]
+
+        reason_prompts = [
+            "👉 Explain WHY this is happening (cause or system)",
+            "👉 Add cause-effect logic: what leads to this?",
+            "👉 Clarify the mechanism behind this issue"
+        ]
+
+        action_prompts = [
+            "👉 Add a clear next step: what should the audience do?",
+            "👉 Tell the audience exactly what action to take",
+            "👉 Convert this into a call to action"
+        ]
+
+        moves.append(random.choice(fact_prompts))
+        moves.append(random.choice(reason_prompts))
+        moves.append(random.choice(action_prompts))
+
+    # -----------------------------
+    # 2. PERSUASION MODE
+    # -----------------------------
+    elif "Persuasion" in func:
+
         if e < 40:
-            moves.append("👉 Add data or research evidence")
+            moves.append("👉 Add a specific data point or study to strengthen credibility")
+
         if l < 40:
-            moves.append("👉 Improve cause-effect clarity")
+            moves.append("👉 Strengthen cause-effect reasoning (use 'because', 'this leads to')")
 
-    if "Challenge" in func:
+    # -----------------------------
+    # 3. MOBILISATION MODE
+    # -----------------------------
+    elif "Mobilisation" in func:
+
         if l < 30:
-            moves.append("👉 Add reasoning after the question")
+            moves.append("👉 The message lacks reasoning after the moral claim, which may reduce persuasive impact")
 
+        if e < 20:
+            moves.append("👉 The message lacks external credibility (data, policy, expert reference)")
+
+    # ✅ ADD ACTION GAP
+            moves.append("👉 The message does not specify what the audience should do next (e.g. boycott, support policy, sign, share)")
+
+    # -----------------------------
+    # 4. CHALLENGE MODE
+    # -----------------------------
+    elif "Challenge" in func:
+
+        if l < 30:
+            moves.append("👉 The message lacks reasoning, which weakens persuasive impact")
+
+    # -----------------------------
+    # 5. FALLBACK — STRUCTURE-BASED
+    # -----------------------------
     if not moves:
-        moves.append("✅ Message is structurally strong")
+
+        if e < 20:
+            moves.append("👉 Add a concrete fact or number to anchor the claim")
+
+        if l < 20:
+            moves.append("👉 Explain why this is happening or why it matters")
+
+        if m < 20:
+            moves.append("👉 Clarify why this is important or morally relevant")
+
+        if not moves:
+            moves.append("👉 Add a clear action: what should the audience do next?")
 
     return moves
-
 # -----------------------------
 # MAIN
 # -----------------------------
@@ -251,9 +419,10 @@ if message:
     e, e_exp = evidence_score(message)
     l, l_exp = logic_score(message)
     m, m_exp = moral_score(message)
+    a, a_exp = action_score(message)
     load, avg_len = cognitive_load(message)
 
-    score = final_score(func, e, l, m)
+    score = final_score(func, e, l, m,a)
 
     # -----------------------------
     # DISPLAY
@@ -263,6 +432,7 @@ if message:
     st.write(f"**Function:** {func}")
 
     st.subheader("📊 Component Breakdown")
+    st.caption("This tool evaluates message strength across four dimensions: evidence, logic, moral framing, and action clarity.")
 
     with st.expander("Evidence Strength"):
         st.write(f"Score: {e}/100")
@@ -276,6 +446,10 @@ if message:
         st.write(f"Score: {m}/100")
         st.markdown(m_exp)
 
+    with st.expander("Action Clarity"):
+        st.write(f"Score: {a}/100")
+        st.markdown(a_exp)
+
     st.write(f"**Cognitive Load:** {load} (avg sentence length: {round(avg_len,1)} words)")
 
     st.subheader("🔥 Final Strength Score")
@@ -287,7 +461,7 @@ if message:
     st.write(explain_score(func, e, l, m))
 
     st.subheader("🧭 Strategic Moves")
-    for move in strategy(func, e, l, m):
+    for move in strategy(func, e, l, m, message):
         st.write(move)
 
 else:
